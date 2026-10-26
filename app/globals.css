@@ -1,26 +1,65 @@
+@import url('https://fonts.googleapis.com/css2?family=Readex+Pro:wght@300;400;500;600;700&display=swap');
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --font-sans: 'Readex Pro', sans-serif;
+  
+  /* TALORA Brand Identity */
+  --talora-navy: #0B1F3A;
+  --talora-navy-hover: #08172C;
+  --talora-teal: #14B8A6;
+  --talora-teal-hover: #0D9488;
+  --talora-gold: #F2C14E;
+  --talora-bg: #F7F9FC;
+  --talora-card: #FFFFFF;
+  --talora-text: #172033;
+  --talora-border: #E5EAF0;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: var(--talora-bg);
+  color: var(--talora-text);
+  font-family: var(--font-sans);
+  direction: rtl;
+}
+
+/* Base Utility Classes */
+.talora-card {
+  background-color: var(--talora-card);
+  border: 1px solid var(--talora-border);
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+  box-shadow: 0 1px 2px 0 rgba(11, 31, 58, 0.05);
+}
+
+.talora-btn-primary {
+  background-color: var(--talora-navy);
+  color: #ffffff;
+  font-weight: 500;
+  padding: 0.625rem 1rem;
+  border-radius: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: background-color 0.2s;
+}
+.talora-btn-primary:hover {
+  background-color: var(--talora-navy-hover);
+}
+
+.talora-btn-secondary {
+  background-color: var(--talora-teal);
+  color: #ffffff;
+  font-weight: 500;
+  padding: 0.625rem 1rem;
+  border-radius: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  transition: background-color 0.2s;
+}
+.talora-btn-secondary:hover {
+  background-color: var(--talora-teal-hover);
 }
