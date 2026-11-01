@@ -16,6 +16,7 @@ interface Group {
   student_capacity?: number;
   subject?: string;
   teacher_name?: string;
+  count_absent_as_session?: boolean; // احتساب الغياب كحصة أم لا
 }
 
 interface TeacherOption {
@@ -44,6 +45,7 @@ export default function GroupsPage() {
     student_capacity: 20,
     schedule: "",
     teacher_id: "",
+    count_absent_as_session: false, // الخانة الجديدة
   });
 
   useEffect(() => {
@@ -71,7 +73,7 @@ export default function GroupsPage() {
       setUserRole(currentRole);
       setSchoolId(currentSchoolId);
 
-      // 3. جلب الأساتذة المنتمين للمدرسة بالاعتماد على first_name و last_name
+      // 3. جلب الأساتذة المنتمين للمدرسة
       if (currentSchoolId) {
         const { data: profilesData } = await supabase
           .from("profiles")
@@ -133,7 +135,6 @@ export default function GroupsPage() {
 
         let teachersMap: Record<string, string> = {};
         if (teacherIds.length > 0) {
-          // جلب first_name و last_name بدلاً من full_name
           const { data: profilesData } = await supabase
             .from("profiles")
             .select("id, first_name, last_name")
@@ -181,6 +182,7 @@ export default function GroupsPage() {
           schedule: formData.schedule,
           teacher_id: formData.teacher_id || null,
           school_id: schoolId || null,
+          count_absent_as_session: formData.count_absent_as_session,
         },
       ]);
 
@@ -195,6 +197,7 @@ export default function GroupsPage() {
         student_capacity: 20,
         schedule: "",
         teacher_id: "",
+        count_absent_as_session: false,
       });
 
       const { data: { user } } = await supabase.auth.getUser();
@@ -252,7 +255,7 @@ export default function GroupsPage() {
             <h1 className="text-xl md:text-2xl font-bold text-slate-800">إدارة ومتابعة الأفواج والدروس</h1>
             <p className="text-sm text-slate-500 mt-1">
               {isSchoolOwner 
-                ? "لوحة التحكم الإدارية لصاحب المؤسسة لإنشاء الأفواج وتعيين الأساتذة" 
+                ? "لوحة التحكم الإدارية لصاحب المؤسسة لإنشاء الأفواج وتعيين الأساتذة وتحديد سياسات غياب الأفواج" 
                 : "لوحة التحكم الخاصة بالأستاذ لمتابعة جدول وأعضاء الأفواج"}
             </p>
           </div>
@@ -286,7 +289,7 @@ export default function GroupsPage() {
         ) : (
           <div className="bg-white rounded-xl shadow-sm border border-slate-200/60 overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-right border-collapse min-w-[700px]">
+              <table className="w-full text-right border-collapse min-w-[750px]">
                 <thead>
                   <tr className="bg-slate-50 text-slate-600 text-sm font-semibold border-b border-slate-200/60">
                     <th className="p-4">اسم الفوج</th>
@@ -295,6 +298,7 @@ export default function GroupsPage() {
                     <th className="p-4">المستوى</th>
                     <th className="p-4">التوقيت</th>
                     <th className="p-4 text-center">حصص/شهر</th>
+                    <th className="p-4 text-center">احتساب الغياب</th>
                     <th className="p-4 text-center">السعة</th>
                   </tr>
                 </thead>
@@ -311,6 +315,17 @@ export default function GroupsPage() {
                       <td className="p-4 text-slate-600">{group.level || "-"}</td>
                       <td className="p-4 text-slate-600">{group.schedule || "-"}</td>
                       <td className="p-4 text-center font-bold text-slate-700">{group.monthly_sessions_count || "-"}</td>
+                      <td className="p-4 text-center">
+                        {group.count_absent_as_session ? (
+                          <span className="bg-amber-100 text-amber-800 px-2.5 py-1 rounded-md text-xs font-semibold">
+                            يُحسب كحصة ⚠️
+                          </span>
+                        ) : (
+                          <span className="bg-slate-100 text-slate-600 px-2.5 py-1 rounded-md text-xs font-semibold">
+                            لا يُحسب
+                          </span>
+                        )}
+                      </td>
                       <td className="p-4 text-center font-bold text-slate-700">{group.student_capacity ? `${group.student_capacity} طالب` : "-"}</td>
                     </tr>
                   ))}
@@ -424,6 +439,24 @@ export default function GroupsPage() {
                   value={formData.schedule}
                   onChange={(e) => setFormData({ ...formData, schedule: e.target.value })}
                   className="w-full border border-slate-200 rounded-xl p-2.5 outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              {/* خيار احتساب الغياب كحصة مستهلكة */}
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200/80 flex items-center justify-between cursor-pointer" onClick={() => setFormData({ ...formData, count_absent_as_session: !formData.count_absent_as_session })}>
+                <div>
+                  <label className="block font-bold text-slate-800 text-xs md:text-sm cursor-pointer">
+                    احتساب الغياب كحصة مستهلكة ⚠️
+                  </label>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    عند التفعيل، يخصم نظام الإحصائيات الحصة على الطالب حتى إن كان غائباً.
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={formData.count_absent_as_session}
+                  onChange={(e) => setFormData({ ...formData, count_absent_as_session: e.target.checked })}
+                  className="w-5 h-5 accent-emerald-600 rounded cursor-pointer"
                 />
               </div>
 

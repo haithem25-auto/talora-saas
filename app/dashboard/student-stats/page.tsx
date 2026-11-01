@@ -10,6 +10,7 @@ interface Group {
   monthly_price: number | null;
   monthly_sessions_count: number | null;
   level: string | null;
+  count_absent_as_session?: boolean;
 }
 
 interface Student {
@@ -24,53 +25,56 @@ interface Student {
 interface SubscriptionRecord {
   id?: string;
   student_id: string;
-  month_year: string;
-  amount_required: number;
+  billing_month?: string;
+  amount_due: number;
   amount_paid: number;
   status: "paid" | "partial" | "unpaid";
 }
 
-export default function SubscriptionsPage() {
+interface StudentStatSummary {
+  student: Student;
+  group?: Group;
+  subscription?: SubscriptionRecord;
+  presentCount: number;
+  absentCount: number;
+  consumedSessions: number;
+  isLateOnPayment: boolean;
+  unpaidAmount: number;
+}
+
+export default function StudentStatsPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
 
-  // معطيات المدرسة
-  const [schoolId, setSchoolId] = useState<string>("");
+  // تحديد الشهر المالي الحالي بتنسيق YYYY-MM
+  const [selectedMonth, setSelectedMonth] = useState<string>(() => {
+    const d = new Date();
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    return `${year}-${month}`;
+  });
 
-  // القوائم المجلوبة من قاعدة البيانات
-  const [students, setStudents] = useState<Student[]>([]);
-  const [groups, setGroups] = useState<Group[]>([]);
-  const [subscriptionsMap, setSubscriptionsMap] = useState<Record<string, SubscriptionRecord>>({});
-  const [attendanceCountMap, setAttendanceCountMap] = useState<Record<string, number>>({});
-
-  // التلميذ المحدد حالياً
-  const [selectedStudentId, setSelectedStudentId] = useState<string>("");
-
-  // قيم نموذج الدفع والتجديد
-  const [amountRequired, setAmountRequired] = useState<number>(0);
-  const [amountPaid, setAmountPaid] = useState<number>(0);
-
-  // التاريخ المالي الحالي (مثل: "October 2026")
-  const now = new Date();
-  const currentMonthYear = now.toLocaleString("en-US", { month: "long", year: "numeric" });
-  const yearStr = now.getFullYear().toString();
-  const monthStr = String(now.getMonth() + 1).padStart(2, "0");
-  const currentYYYYMM = `${yearStr}-${monthStr}`;
+  const [statsSummary, setStatsSummary] = useState<StudentStatSummary[]>([]);
+  const [filterTab, setFilterTab] = useState<"all" | "unpaid" | "high_absent">("all");
 
   useEffect(() => {
-    loadSubscriptionsData();
-  }, []);
+    loadDashboardStats(selectedMonth);
+  }, [selectedMonth]);
 
-  // جلب البيانات مع تطبيق أمان وعزل المدرسة
-  async function loadSubscriptionsData() {
+  async function loadDashboardStats(monthYYYYMM?: string) {
     try {
       setLoading(true);
+
+      // حماية المعامل: التأكد من وجود نص لتاريخ الشهر أو استخدام القيم الافتراضية
+      const targetMonth =
+        monthYYYYMM ||
+        selectedMonth ||
+        `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}`;
 
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
-      // 1. تحديد معرّف المدرسة بأسلوب صارم
+      // 1. تحديد معرّف المدرسة
       let currentSchoolId = "";
       const { data: profile } = await supabase
         .from("profiles")
@@ -87,151 +91,143 @@ export default function SubscriptionsPage() {
           .eq("owner_id", user.id)
           .maybeSingle();
 
-        if (ownedSchool?.id) {
-          currentSchoolId = ownedSchool.id;
-        }
+        if (ownedSchool?.id) currentSchoolId = ownedSchool.id;
       }
 
-      setSchoolId(currentSchoolId);
-
-      // ⛔ منع الجلب إذا لم تكن المدرسة محددة
       if (!currentSchoolId) {
-        console.warn("تنبيه أمان: لم يتم العثور على معرّف المدرسة للمستخدم الحاضر.");
-        setStudents([]);
-        setGroups([]);
         setLoading(false);
         return;
       }
 
-      // 2. جلب أفواج المدرسة الحالية مع السعر والحصص
+      // 2. حساب نطاق التاريخ بأمان
+      const [yearStr, monthStr] = targetMonth.split("-");
+      const year = parseInt(yearStr, 10);
+      const month = parseInt(monthStr, 10);
+
+      const startOfMonth = `${targetMonth}-01`;
+
+      const nextMonthDate = new Date(year, month, 1);
+      const nextYearStr = nextMonthDate.getFullYear();
+      const nextMonthStr = String(nextMonthDate.getMonth() + 1).padStart(2, "0");
+      const startOfNextMonth = `${nextYearStr}-${nextMonthStr}-01`;
+
+      // 3. جلب الأفواج
       const { data: groupsData } = await supabase
         .from("groups")
-        .select("id, name, monthly_price, monthly_sessions_count, level")
+        .select("id, name, monthly_price, monthly_sessions_count, level, count_absent_as_session")
         .eq("school_id", currentSchoolId);
 
-      const loadedGroups: Group[] = groupsData || [];
-      setGroups(loadedGroups);
+      const groupsList: Group[] = groupsData || [];
+      const groupsMap = new Map<string, Group>(groupsList.map((g) => [g.id, g]));
 
-      // 3. جلب طلاب المدرسة الحالية فقط
+      // 4. جلب الطلاب
       const { data: studentsData } = await supabase
         .from("students")
         .select("id, first_name, last_name, level, group_id")
         .eq("school_id", currentSchoolId);
 
-      const loadedStudents: Student[] = (studentsData || []).map((s) => {
-        const matchedGroup = loadedGroups.find((g) => g.id === s.group_id);
+      const studentsList: Student[] = (studentsData || []).map((s) => ({
+        ...s,
+        group_name: s.group_id ? groupsMap.get(s.group_id)?.name || "غير مسجل" : "غير مسجل",
+      }));
+
+      const studentIds = studentsList.map((s) => s.id);
+      if (studentIds.length === 0) {
+        setStatsSummary([]);
+        setLoading(false);
+        return;
+      }
+
+      // 5. جلب الاشتراكات بنطاق تاريخ آمن
+      const { data: subsData } = await supabase
+        .from("student_subscriptions")
+        .select("id, student_id, billing_month, amount_due, amount_paid, status")
+        .in("student_id", studentIds)
+        .gte("billing_month", startOfMonth)
+        .lt("billing_month", startOfNextMonth);
+
+      const subMap = new Map<string, SubscriptionRecord>();
+      (subsData || []).forEach((sub: any) => {
+        subMap.set(sub.student_id, {
+          id: sub.id,
+          student_id: sub.student_id,
+          billing_month: sub.billing_month,
+          amount_due: Number(sub.amount_due) || 0,
+          amount_paid: Number(sub.amount_paid) || 0,
+          status: sub.status,
+        });
+      });
+
+      // 6. جلب الحضور لنفس النطاق الزمني
+      const { data: attData } = await supabase
+        .from("attendance")
+        .select("student_id, status, attendance_date")
+        .in("student_id", studentIds)
+        .eq("school_id", currentSchoolId)
+        .gte("attendance_date", startOfMonth)
+        .lt("attendance_date", startOfNextMonth);
+
+      const studentAttStats = new Map<string, { present: number; absent: number }>();
+
+      (attData || []).forEach((r) => {
+        const current = studentAttStats.get(r.student_id) || { present: 0, absent: 0 };
+        if (r.status === "present" || r.status === "late") {
+          current.present += 1;
+        } else if (r.status === "absent") {
+          current.absent += 1;
+        }
+        studentAttStats.set(r.student_id, current);
+      });
+
+      // 7. تجميع البيانات للواجهة
+      const summary: StudentStatSummary[] = studentsList.map((st) => {
+        const group = st.group_id ? groupsMap.get(st.group_id) : undefined;
+        const sub = subMap.get(st.id);
+        const att = studentAttStats.get(st.id) || { present: 0, absent: 0 };
+
+        const countAbsent = group?.count_absent_as_session ?? false;
+        const consumedSessions = countAbsent ? att.present + att.absent : att.present;
+
+        const reqPrice = sub ? sub.amount_due : (group?.monthly_price || 0);
+        const paidPrice = sub ? sub.amount_paid : 0;
+        const unpaidAmount = Math.max(0, reqPrice - paidPrice);
+
+        const isLateOnPayment = sub ? sub.status !== "paid" : reqPrice > 0;
+
         return {
-          ...s,
-          group_name: matchedGroup ? matchedGroup.name : "غير مسجل في فوج",
+          student: st,
+          group,
+          subscription: sub,
+          presentCount: att.present,
+          absentCount: att.absent,
+          consumedSessions,
+          isLateOnPayment,
+          unpaidAmount,
         };
       });
 
-      setStudents(loadedStudents);
-
-      // اختيار أول تلميذ افتراضياً إذا لم يتم التحديد بعد
-      if (loadedStudents.length > 0 && !selectedStudentId) {
-        setSelectedStudentId(loadedStudents[0].id);
-      }
-
-      const studentIds = loadedStudents.map((s) => s.id);
-
-      if (studentIds.length > 0) {
-        // 4. جلب الاشتراكات الشهرية المسجلة للتلاميذ للشهر الحالي
-        const { data: subsData } = await supabase
-          .from("student_subscriptions")
-          .select("id, student_id, month_year, amount_required, amount_paid, status")
-          .in("student_id", studentIds)
-          .eq("month_year", currentYYYYMM);
-
-        const subMap: Record<string, SubscriptionRecord> = {};
-        (subsData || []).forEach((sub) => {
-          subMap[sub.student_id] = sub;
-        });
-        setSubscriptionsMap(subMap);
-
-        // 5. جلب عدد الحصص التي حضرها كل تلميذ خلال هذا الشهر
-        const { data: attData } = await supabase
-          .from("attendance")
-          .select("student_id, status, attendance_date")
-          .in("student_id", studentIds)
-          .eq("school_id", currentSchoolId);
-
-        const attMap: Record<string, number> = {};
-        (attData || []).forEach((r) => {
-          if (!r.attendance_date) return;
-          const rPrefix = String(r.attendance_date).substring(0, 7);
-          if (rPrefix === currentYYYYMM && (r.status === "present" || r.status === "late")) {
-            attMap[r.student_id] = (attMap[r.student_id] || 0) + 1;
-          }
-        });
-        setAttendanceCountMap(attMap);
-      }
+      setStatsSummary(summary);
     } catch (err) {
-      console.error("خطأ أثناء تحميل بيانات الاشتراكات:", err);
+      console.error("خطأ أثناء تحميل إحصائيات الطلاب:", err);
     } finally {
       setLoading(false);
     }
   }
 
-  // تحديث القيم المطلوبة والمدفوعة بناءً على التلميذ المحدد والفوج المربوط به
-  const selectedStudent = students.find((s) => s.id === selectedStudentId);
-  const selectedGroup = groups.find((g) => g.id === selectedStudent?.group_id);
-  const existingSub = selectedStudentId ? subscriptionsMap[selectedStudentId] : null;
+  const filteredSummary = statsSummary.filter((item) => {
+    if (filterTab === "unpaid") return item.isLateOnPayment;
+    if (filterTab === "high_absent") return item.absentCount >= 2;
+    return true;
+  });
 
-  useEffect(() => {
-    if (selectedStudent && selectedGroup) {
-      // استخراج السعر الحقيقي من الفوج المسجل فيه التلميذ
-      const realPrice = Number(selectedGroup.monthly_price) || 0;
-      setAmountRequired(existingSub?.amount_required ?? realPrice);
-      setAmountPaid(existingSub?.amount_paid ?? realPrice);
-    } else {
-      setAmountRequired(0);
-      setAmountPaid(0);
-    }
-  }, [selectedStudentId, selectedGroup, existingSub]);
+  const totalUnpaidStudents = statsSummary.filter((s) => s.isLateOnPayment).length;
+  const totalHighAbsents = statsSummary.filter((s) => s.absentCount >= 2).length;
 
-  // حساب حالة الاشتراك حياً
-  const calculatedStatus =
-    amountPaid >= amountRequired && amountRequired > 0
-      ? "paid"
-      : amountPaid > 0
-      ? "partial"
-      : "unpaid";
-
-  // معالجة حفظ واستلام الاشتراك
-  const handleSavePayment = async () => {
-    if (!selectedStudentId) {
-      alert("يرجى اختيار تلميذ أولاً.");
-      return;
-    }
-
-    try {
-      setSubmitting(true);
-
-      const payload = {
-        student_id: selectedStudentId,
-        month_year: currentYYYYMM,
-        amount_required: amountRequired,
-        amount_paid: amountPaid,
-        status: calculatedStatus,
-        school_id: schoolId || null,
-      };
-
-      const { error } = await supabase
-        .from("student_subscriptions")
-        .upsert([payload], { onConflict: "student_id,month_year" });
-
-      if (error) throw error;
-
-      alert("تم تسجيل واستلام المبلغ وتجديد الاشتراك بنجاح!");
-      await loadSubscriptionsData();
-    } catch (err: any) {
-      console.error("خطأ أثناء حفظ الاشتراك:", err);
-      alert("حدث خطأ أثناء حفظ الاشتراك: " + (err.message || err));
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  const [selectedYearNum, selectedMonthNum] = selectedMonth.split("-").map(Number);
+  const formattedMonthLabel = new Date(selectedYearNum, selectedMonthNum - 1, 1).toLocaleString("ar-DZ", {
+    month: "long",
+    year: "numeric",
+  });
 
   const SidebarComponent = Sidebar as any;
 
@@ -240,163 +236,165 @@ export default function SubscriptionsPage() {
       <SidebarComponent sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
 
       <div className="flex-1 flex flex-col p-4 md:p-8 space-y-6 overflow-x-hidden min-w-0">
-        {/* شريط الأجهزة المحمولة */}
-        <div className="flex items-center justify-between md:hidden pb-3 border-b border-slate-200">
+        {/* الهيدر الرئيسي وفلتر الشهر */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-slate-200">
+          <div>
+            <h1 className="text-2xl font-black text-slate-900">متابعة إحصائيات الحضور والاشتراكات</h1>
+            <p className="text-xs text-slate-500 mt-1">
+              إحصائيات الطلاب وسجلات الاشتراكات لشهر: <span className="font-bold text-emerald-700">{formattedMonthLabel}</span>
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3 bg-white p-2 rounded-2xl border border-slate-200 shadow-xs">
+            <label className="text-xs font-bold text-slate-600 px-1">اختر الشهر:</label>
+            <input
+              type="month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              className="bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-bold text-slate-800 outline-none focus:border-emerald-500 transition cursor-pointer"
+            />
+            <button
+              onClick={() => loadDashboardStats(selectedMonth)}
+              className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition cursor-pointer"
+            >
+              🔄
+            </button>
+          </div>
+        </div>
+
+        {/* كروت الأرقام الإحصائية */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
+            <span className="text-xs font-bold text-slate-400">المتأخرون عن التسديد</span>
+            <div className="text-3xl font-black text-rose-600 mt-2">{totalUnpaidStudents}</div>
+            <span className="text-[11px] text-rose-500 font-medium">طالب يحتاج متابعة الدفع</span>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
+            <span className="text-xs font-bold text-slate-400">كثرة الغياب (حطتين فأكثر)</span>
+            <div className="text-3xl font-black text-amber-600 mt-2">{totalHighAbsents}</div>
+            <span className="text-[11px] text-amber-500 font-medium">طلاب غابوا حصتين فأكثر</span>
+          </div>
+
+          <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
+            <span className="text-xs font-bold text-slate-400">إجمالي المسجلين</span>
+            <div className="text-3xl font-black text-emerald-600 mt-2">{statsSummary.length}</div>
+            <span className="text-[11px] text-slate-400 font-medium">في جميع أفواج المدرسة</span>
+          </div>
+        </div>
+
+        {/* أزرار الفلترة السريعة */}
+        <div className="flex gap-2 border-b border-slate-200 pb-2">
           <button
-            onClick={() => setSidebarOpen(true)}
-            className="p-2 text-slate-600 hover:bg-slate-100 rounded-lg"
+            onClick={() => setFilterTab("all")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+              filterTab === "all" ? "bg-slate-900 text-white" : "bg-white text-slate-600 hover:bg-slate-100"
+            }`}
           >
-            ☰
+            جميع الطلاب ({statsSummary.length})
           </button>
-          <span className="font-bold text-slate-800 text-sm">اشتراكات التلاميذ</span>
+          <button
+            onClick={() => setFilterTab("unpaid")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+              filterTab === "unpaid" ? "bg-rose-600 text-white" : "bg-white text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            المتأخرون في التسديد ({totalUnpaidStudents})
+          </button>
+          <button
+            onClick={() => setFilterTab("high_absent")}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer ${
+              filterTab === "high_absent" ? "bg-amber-600 text-white" : "bg-white text-slate-600 hover:bg-slate-100"
+            }`}
+          >
+            الأكثر غياباً ({totalHighAbsents})
+          </button>
         </div>
 
-        {/* قائمة اختيار التلميذ */}
-        <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-2xs space-y-2">
-          <label className="block text-xs font-bold text-slate-500">اختر التلميذ من القائمة:</label>
-          <div className="flex flex-wrap gap-2">
-            {students.map((st) => (
-              <button
-                key={st.id}
-                type="button"
-                onClick={() => setSelectedStudentId(st.id)}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                  selectedStudentId === st.id
-                    ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/20"
-                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                }`}
-              >
-                {st.first_name} {st.last_name} ({st.level || "عام"})
-              </button>
-            ))}
-          </div>
-        </div>
-
+        {/* الجدول الشامل */}
         {loading ? (
-          <div className="py-20 text-center text-slate-400 font-medium text-xs">
-            جاري تحميل الاشتراكات وقوائم التلاميذ...
-          </div>
-        ) : !selectedStudent ? (
-          <div className="bg-white p-8 rounded-2xl border border-slate-100 text-center text-slate-400 text-xs">
-            لا يوجد تلاميذ مسجلون بالمدرسة حالياً.
-          </div>
+          <div className="py-20 text-center text-slate-400 text-xs">جاري تحميل البيانات...</div>
+        ) : filteredSummary.length === 0 ? (
+          <div className="bg-white p-8 rounded-2xl text-center text-slate-400 text-xs">لا توجد سجلات مطابقة للفلتر المحدد.</div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-            {/* كارت تأكيد الدفع والتجديد */}
-            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-xs space-y-6">
-              <h2 className="text-lg font-black text-slate-900 border-b border-slate-100 pb-3">
-                تأكيد الدفع والتجديد
-              </h2>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    المبلغ المطلوب (د.ج)
-                  </label>
-                  <input
-                    type="number"
-                    readOnly
-                    value={amountRequired}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-sm font-bold text-slate-700 outline-none cursor-not-allowed"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                    المبلغ المدفوع فعلياً (د.ج) *
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={amountPaid}
-                    onChange={(e) => setAmountPaid(Number(e.target.value) || 0)}
-                    className="w-full bg-white border border-slate-200 focus:border-emerald-500 rounded-xl p-3 text-sm font-bold text-slate-900 outline-none transition"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">
-                  حالة الاشتراك لهذا الشهر:
-                </label>
-                <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 flex items-center justify-between">
-                  {calculatedStatus === "paid" && (
-                    <span className="px-3 py-1 bg-emerald-100 text-emerald-800 rounded-lg text-xs font-bold">
-                      ✓ مدفوع بالكامل
-                    </span>
-                  )}
-                  {calculatedStatus === "partial" && (
-                    <span className="px-3 py-1 bg-amber-100 text-amber-800 rounded-lg text-xs font-bold">
-                      ⏳ غير مدفوع / مدفوع جزئياً
-                    </span>
-                  )}
-                  {calculatedStatus === "unpaid" && (
-                    <span className="px-3 py-1 bg-rose-100 text-rose-800 rounded-lg text-xs font-bold">
-                      ✕ غير مدفوع
-                    </span>
-                  )}
-                  <span className="text-[11px] font-mono text-slate-400">
-                    {amountPaid} / {amountRequired} د.ج
-                  </span>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={handleSavePayment}
-                disabled={submitting}
-                className="w-full bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold py-3.5 rounded-2xl text-sm shadow-lg shadow-emerald-600/20 transition disabled:opacity-50 cursor-pointer"
-              >
-                {submitting ? "جاري الاعتماد والحفظ..." : "تأكيد واستلام المبلغ 💾"}
-              </button>
-            </div>
-
-            {/* بطاقة التلميذ ومعلومات الفوج */}
-            <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-xs space-y-6">
-              <h2 className="text-lg font-black text-slate-900 border-b border-slate-100 pb-3">
-                بطاقة التلميذ
-              </h2>
-
-              <div className="space-y-3 text-xs">
-                <div className="flex justify-between items-center py-1.5 border-b border-slate-100">
-                  <span className="text-slate-400 font-medium">اسم التلميذ الكامل:</span>
-                  <span className="font-black text-slate-900 text-sm">
-                    {selectedStudent.first_name} {selectedStudent.last_name}
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center py-1.5 border-b border-slate-100">
-                  <span className="text-slate-400 font-medium">المستوى الدراسي:</span>
-                  <span className="font-bold text-slate-800">
-                    {selectedStudent.level || "عام"}
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center py-1.5 border-b border-slate-100">
-                  <span className="text-slate-400 font-medium">الفوج المسجل فيه:</span>
-                  <span className="font-bold text-emerald-700">
-                    {selectedStudent.group_name}
-                  </span>
-                </div>
-
-                <div className="flex justify-between items-center py-1.5 border-b border-slate-100">
-                  <span className="text-slate-400 font-medium">الشهر المالي الحالي:</span>
-                  <span className="font-mono font-bold text-slate-700 bg-slate-100 px-2.5 py-1 rounded-lg">
-                    📅 {currentMonthYear}
-                  </span>
-                </div>
-              </div>
-
-              {/* بطاقة إحصاء الحصص المباشرة من الفوج */}
-              <div className="bg-emerald-50/70 border border-emerald-100 p-5 rounded-2xl text-center space-y-1">
-                <p className="text-xs font-bold text-emerald-800">عدد الحصص الحاضرة هذا الشهر</p>
-                <div className="text-3xl font-black text-emerald-700">
-                  {attendanceCountMap[selectedStudent.id] || 0}
-                </div>
-                <p className="text-[11px] text-emerald-600 font-medium">
-                  من أصل {selectedGroup?.monthly_sessions_count || 4} حصص مقترحة
-                </p>
-              </div>
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-xs overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-right text-xs">
+                <thead className="bg-slate-50 text-slate-500 font-bold border-b border-slate-100">
+                  <tr>
+                    <th className="p-4">الطالب</th>
+                    <th className="p-4">الفوج</th>
+                    <th className="p-4">سياسة الغياب للفوج</th>
+                    <th className="p-4">الحضور / الغياب</th>
+                    <th className="p-4">الحصص المستهلكة</th>
+                    <th className="p-4">حالة الاشتراك</th>
+                    <th className="p-4">المبلغ المدفوع / المطلوب</th>
+                    <th className="p-4">المبلغ المتبقي</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-slate-700">
+                  {filteredSummary.map(({ student, group, presentCount, absentCount, consumedSessions, isLateOnPayment, unpaidAmount, subscription }) => (
+                    <tr key={student.id} className="hover:bg-slate-50/50 transition">
+                      <td className="p-4 font-bold text-slate-900">
+                        {student.first_name} {student.last_name}
+                      </td>
+                      <td className="p-4">{student.group_name}</td>
+                      <td className="p-4">
+                        {group?.count_absent_as_session ? (
+                          <span className="px-2 py-1 bg-amber-50 text-amber-700 rounded text-[11px]">
+                            الغياب يُحسب كحصة ⚠️
+                          </span>
+                        ) : (
+                          <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-[11px]">
+                            الغياب لا يُحسب
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-4">
+                        <span className="text-emerald-600 font-bold">{presentCount} حضور</span>
+                        {" / "}
+                        <span className={absentCount > 0 ? "text-rose-600 font-bold" : "text-slate-400"}>
+                          {absentCount} غياب
+                        </span>
+                      </td>
+                      <td className="p-4 font-mono font-bold">
+                        {consumedSessions} / {group?.monthly_sessions_count || 4} حصص
+                      </td>
+                      <td className="p-4">
+                        {subscription ? (
+                          subscription.status === "paid" ? (
+                            <span className="px-2 py-1 bg-emerald-100 text-emerald-800 rounded font-bold text-[11px]">
+                              ✓ مسجل ومسدد
+                            </span>
+                          ) : subscription.status === "partial" ? (
+                            <span className="px-2 py-1 bg-amber-100 text-amber-800 rounded font-bold text-[11px]">
+                              ⏳ مدفوع جزئياً
+                            </span>
+                          ) : (
+                            <span className="px-2 py-1 bg-rose-100 text-rose-800 rounded font-bold text-[11px]">
+                              ✕ غير مدفوع
+                            </span>
+                          )
+                        ) : (
+                          <span className="px-2 py-1 bg-slate-100 text-slate-500 rounded text-[11px]">
+                            لم يُسجل اشتراك
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-4 font-mono font-bold text-slate-700">
+                        {subscription ? `${subscription.amount_paid} / ${subscription.amount_due} د.ج` : `0 / ${group?.monthly_price || 0} د.ج`}
+                      </td>
+                      <td className="p-4 font-mono font-bold text-slate-900">
+                        {unpaidAmount > 0 ? (
+                          <span className="text-rose-600">{unpaidAmount} د.ج</span>
+                        ) : (
+                          <span className="text-emerald-600">0 د.ج</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
