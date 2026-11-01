@@ -23,6 +23,7 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState({ text: "", type: "" });
+  const [debugError, setDebugError] = useState<string | null>(null);
 
   // 1. استمارة ولي الأمر
   const [parentFirstName, setParentFirstName] = useState("");
@@ -42,34 +43,60 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
     async function fetchSchoolData() {
       try {
         setLoading(true);
-        // فك تشفير النص الممرر وتنظيف المسافات الزائدة
-        const cleanSlug = decodeURIComponent(slug || "").trim();
+        setDebugError(null);
+
+        // 1. تنظيف المعرف الممرر عبر الرابط
+        let cleanSlug = decodeURIComponent(slug || "").trim();
+
+        // إذا كان الماسح أرسل مساراً كاملاً
+        if (cleanSlug.includes("/")) {
+          cleanSlug = cleanSlug.split("/").filter(Boolean).pop() || cleanSlug;
+        }
 
         if (!cleanSlug) {
           setSchool(null);
           return;
         }
 
-        // البحث بـ ilike وإحاطة المتغير باقتباس لتجنب أخطاء PostgREST
-        const { data: schoolData, error: schoolErr } = await supabase
+        // 2. البحث الأول المباشر بالتطابق التام
+        const { data: primaryData, error: primaryErr } = await supabase
           .from("schools")
           .select("id, name, city")
-          .or(`slug.ilike."${cleanSlug}",qr_code.ilike."${cleanSlug}"`)
+          .or(`slug.eq.${cleanSlug},qr_code.eq.${cleanSlug}`)
           .maybeSingle();
 
-        if (schoolErr || !schoolData) {
-          if (schoolErr) console.error("خطأ في جلب بيانات المؤسسة:", schoolErr);
-          setSchool(null);
+        if (primaryData) {
+          setSchool(primaryData);
           return;
         }
-        setSchool(schoolData);
-      } catch (err) {
-        console.error("خطأ أثناء جلب بيانات المؤسسة:", err);
+
+        if (primaryErr) {
+          console.error("خطأ Supabase المباشر:", primaryErr);
+          setDebugError(primaryErr.message);
+        }
+
+        // 3. محاولة بحث ثانوية (مرنة) في حال اختلاف حالة الأحرف أو المسافات
+        const { data: fallbackData, error: fallbackErr } = await supabase
+          .from("schools")
+          .select("id, name, city")
+          .or(`slug.ilike.${cleanSlug},qr_code.ilike.${cleanSlug}`)
+          .maybeSingle();
+
+        if (fallbackErr) {
+          console.error("خطأ Supabase الفرعي:", fallbackErr);
+          setDebugError(fallbackErr.message);
+        }
+
+        setSchool(fallbackData || null);
+      } catch (err: any) {
+        console.error("خطأ أثناء جلب البيانات:", err);
+        setDebugError(err?.message || "خطأ غير معروف");
         setSchool(null);
       } finally {
         setLoading(false);
       }
     }
+
     if (slug) fetchSchoolData();
   }, [slug]);
 
@@ -178,6 +205,14 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
           <p className="text-xs text-slate-500 leading-relaxed">
             عذراً، الرابط المستعمل لا يحتوي على المعرف الفريد الخاص بالمؤسسة التعليمية. يرجى إعادة مسح الـ QR Code الخاص بها.
           </p>
+
+          {/* تفاصيل الخطأ لتسهيل التتبع برمجياً */}
+          {debugError && (
+            <div className="p-3 bg-red-50 border border-red-100 rounded-xl text-[11px] text-red-600 font-mono text-right dir-ltr overflow-x-auto">
+              <strong>Supabase Debug:</strong> {debugError}
+            </div>
+          )}
+
           <Link
             href="/login"
             className="block w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-2xl text-sm transition-all shadow-lg shadow-blue-600/20"
