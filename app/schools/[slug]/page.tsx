@@ -42,19 +42,30 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
     async function fetchSchoolData() {
       try {
         setLoading(true);
+        // فك تشفير النص الممرر وتنظيف المسافات الزائدة
+        const cleanSlug = decodeURIComponent(slug || "").trim();
+
+        if (!cleanSlug) {
+          setSchool(null);
+          return;
+        }
+
+        // البحث بـ ilike وإحاطة المتغير باقتباس لتجنب أخطاء PostgREST
         const { data: schoolData, error: schoolErr } = await supabase
           .from("schools")
           .select("id, name, city")
-          .or(`slug.eq.${slug},qr_code.eq.${slug}`)
+          .or(`slug.ilike."${cleanSlug}",qr_code.ilike."${cleanSlug}"`)
           .maybeSingle();
 
         if (schoolErr || !schoolData) {
+          if (schoolErr) console.error("خطأ في جلب بيانات المؤسسة:", schoolErr);
           setSchool(null);
           return;
         }
         setSchool(schoolData);
       } catch (err) {
         console.error("خطأ أثناء جلب بيانات المؤسسة:", err);
+        setSchool(null);
       } finally {
         setLoading(false);
       }
