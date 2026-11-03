@@ -15,7 +15,7 @@ export default function LoginPage() {
 
   const router = useRouter();
 
-  // دالة توجيه المستخدم حسب دوره في جدول profiles
+  // دالة توجيه المستخدم حسب دوره عند تسجيل الدخول بالبريد الإلكتروني
   async function redirectUserByRole(userId: string) {
     try {
       const { data: profile, error } = await supabase
@@ -28,7 +28,6 @@ export default function LoginPage() {
         console.error("خطأ أثناء جلب البروفايل:", error);
       }
 
-      // تنظيف نص الرتبة وتوحيد الأحرف
       const userRole = profile?.role ? String(profile.role).trim().toLowerCase() : "";
 
       console.log("الدور المستخرج للمستخدم:", userRole);
@@ -51,13 +50,11 @@ export default function LoginPage() {
           break;
 
         default:
-          // التوجيه الافتراضي للوحة التحكم الرئيسية
           router.push("/dashboard");
           break;
       }
     } catch (err) {
       console.error("خطأ أثناء جلب دور المستخدم:", err);
-      // التوجيه الافتراضي لوحة التحكم الرئيسية
       router.push("/dashboard");
     }
   }
@@ -98,15 +95,19 @@ export default function LoginPage() {
     }
   }
 
-  // 2. تسجيل الدخول باستخدام Google
+  // 2. تسجيل الدخول باستخدام Google الموجه نحو مسار /auth/callback
   async function handleGoogleLogin() {
     setIsGoogleLoading(true);
     setErrorMessage("");
 
+    const redirectOrigin = typeof window !== "undefined" 
+      ? window.location.origin 
+      : "https://talora-saas.netlify.app";
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
-        redirectTo: `${window.location.origin}/dashboard`,
+        redirectTo: `${redirectOrigin}/auth/callback`,
         queryParams: {
           access_type: "offline",
           prompt: "consent",
@@ -148,11 +149,11 @@ export default function LoginPage() {
       dir="rtl"
       className="min-h-screen bg-white text-slate-800 flex flex-col justify-center items-center p-4 sm:p-6 relative overflow-hidden"
     >
-      {/* خلفية تالورا السينمائية */}
+      {/* خلفية تالورا */}
       <div className="absolute top-0 right-1/2 translate-x-1/2 w-full max-w-7xl h-96 bg-gradient-to-b from-blue-50/80 via-blue-50/20 to-transparent pointer-events-none -z-10 blur-3xl rounded-full" />
 
       <div className="w-full max-w-md my-auto">
-        {/* الشعار والهوية البصرية لـ Talora */}
+        {/* الشعار */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white font-black text-3xl shadow-xl shadow-blue-500/25 mb-3 ring-4 ring-blue-100">
             T
@@ -231,7 +232,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={isLoading || isGoogleLoading}
-              className="w-full bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white h-12 rounded-2xl font-bold transition-all shadow-lg shadow-blue-600/20 mt-2 flex items-center justify-center gap-2 disabled:opacity-50 text-sm"
+              className="w-full bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white h-12 rounded-2xl font-bold transition-all shadow-lg shadow-blue-600/20 mt-2 flex items-center justify-center gap-2 disabled:opacity-50 text-sm cursor-pointer"
             >
               {isLoading ? (
                 <span className="flex items-center gap-2">
@@ -247,7 +248,7 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* فاصل بصري */}
+          {/* فاصل */}
           <div className="relative flex py-5 items-center my-1">
             <div className="flex-grow border-t border-slate-100"></div>
             <span className="flex-shrink mx-4 text-slate-400 text-xs font-medium">أو عبر</span>
@@ -259,7 +260,7 @@ export default function LoginPage() {
             type="button"
             onClick={handleGoogleLogin}
             disabled={isLoading || isGoogleLoading}
-            className="w-full bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 h-12 rounded-2xl font-bold transition-all flex items-center justify-center gap-3 disabled:opacity-50 text-sm shadow-sm"
+            className="w-full bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 h-12 rounded-2xl font-bold transition-all flex items-center justify-center gap-3 disabled:opacity-50 text-sm shadow-sm cursor-pointer"
           >
             {isGoogleLoading ? (
               <svg className="animate-spin h-4 w-4 text-slate-500" viewBox="0 0 24 24" fill="none">
@@ -279,7 +280,7 @@ export default function LoginPage() {
             )}
           </button>
 
-          {/* رابط إنشاء حساب جديد */}
+          {/* رابط إنشاء حساب */}
           <div className="mt-6 text-center text-xs text-slate-500 font-medium">
             ليس لديك حساب بعد؟{" "}
             <Link href="/register" className="text-blue-600 font-bold hover:underline">
