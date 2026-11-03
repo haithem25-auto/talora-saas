@@ -29,41 +29,22 @@ export async function GET(request: Request) {
       }
     );
 
-    // 1. تبديل رمز المصادقة بجلسة
+    // 1. تبديل الـ Code بجلسة تسجيل الدخول
     const { data: authData, error: authError } = await supabase.auth.exchangeCodeForSession(code);
 
     if (!authError && authData?.user) {
       const user = authData.user;
 
-      // 2. البحث عن البروفايل أولاً بـ ID الحساب
-      let { data: profile } = await supabase
+      // 2. استعلام أُحادي ومدمج (Single Roundtrip) ينفذ البحث عن id أو email في طلب واحد
+      const { data: profile } = await supabase
         .from("profiles")
         .select("role")
-        .eq("id", user.id)
+        .or(`id.eq.${user.id}${user.email ? `,email.eq.${user.email}` : ""}`)
         .maybeSingle();
 
-      // 3. إذا لم يجد بـ ID (حساب مسجل سابقاً)، يبحث بالبريد الإلكتروني مباشرة
-      if (!profile && user.email) {
-        const { data: profileByEmail } = await supabase
-          .from("profiles")
-          .select("role")
-          .eq("email", user.email)
-          .maybeSingle();
-
-        if (profileByEmail) {
-          profile = profileByEmail;
-          // تحديث id في جدول profiles لربطه بـ Google مستقبلاً
-          await supabase
-            .from("profiles")
-            .update({ id: user.id })
-            .eq("email", user.email);
-        }
-      }
-
-      // تنظيف القيمة
       const userRole = profile?.role ? String(profile.role).trim().toLowerCase() : "";
 
-      // 4. التوجيه المباشر إلى اللوحة المخصصة
+      // 3. التوجيه المباشر والمنفصل
       switch (userRole) {
         case "teacher":
           return NextResponse.redirect(`${origin}/teacher`);
