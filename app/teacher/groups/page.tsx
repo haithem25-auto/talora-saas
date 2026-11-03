@@ -14,7 +14,7 @@ interface Group {
   monthly_price: number | null;
   monthly_sessions_count: number | null;
   school_id: string;
-  count_absence_as_session: boolean;
+  count_absent_as_session: boolean;
 }
 
 export default function TeacherGroupsPage() {
@@ -38,7 +38,7 @@ export default function TeacherGroupsPage() {
     student_capacity: "",
     monthly_price: "",
     monthly_sessions_count: "",
-    count_absence_as_session: false,
+    count_absent_as_session: false,
   });
 
   // جلب بيانات المعلم، ومعرف المدرسة الخاصة به، وأفواجه الحالية
@@ -72,7 +72,7 @@ export default function TeacherGroupsPage() {
         // جلب أفواج المعلم الحالي من جدول groups شاملاً السعر وحالة احتساب الغياب
         const { data: groupsData, error: groupsError } = await supabase
           .from("groups")
-          .select("id, name, level, schedule, subject, student_capacity, monthly_price, monthly_sessions_count, school_id, count_absence_as_session")
+          .select("id, name, level, schedule, subject, student_capacity, monthly_price, monthly_sessions_count, school_id, count_absent_as_session")
           .eq("teacher_id", user.id)
           .order("created_at", { ascending: false });
 
@@ -118,7 +118,7 @@ export default function TeacherGroupsPage() {
         student_capacity: formData.student_capacity ? parseInt(formData.student_capacity, 10) : null,
         monthly_price: formData.monthly_price ? parseFloat(formData.monthly_price) : 0,
         monthly_sessions_count: formData.monthly_sessions_count ? parseInt(formData.monthly_sessions_count, 10) : null,
-        count_absence_as_session: formData.count_absence_as_session,
+        count_absent_as_session: formData.count_absent_as_session,
         teacher_id: teacherId,
         school_id: assignedSchoolId,
       };
@@ -126,7 +126,7 @@ export default function TeacherGroupsPage() {
       const { data, error } = await supabase
         .from("groups")
         .insert([newRecord])
-        .select("id, name, level, schedule, subject, student_capacity, monthly_price, monthly_sessions_count, school_id, count_absence_as_session")
+        .select("id, name, level, schedule, subject, student_capacity, monthly_price, monthly_sessions_count, school_id, count_absent_as_session")
         .single();
 
       if (error) {
@@ -148,7 +148,7 @@ export default function TeacherGroupsPage() {
         student_capacity: "",
         monthly_price: "",
         monthly_sessions_count: "",
-        count_absence_as_session: false,
+        count_absent_as_session: false,
       });
 
       alert("تمت إضافة الفوج التعليمي بنجاح وربطه بالمؤسسة المسجلة!");
@@ -301,8 +301,8 @@ export default function TeacherGroupsPage() {
                   <label className="flex items-start gap-3 p-3.5 bg-slate-50 hover:bg-slate-100/80 rounded-2xl border border-slate-200/80 cursor-pointer transition select-none">
                     <input
                       type="checkbox"
-                      checked={formData.count_absence_as_session}
-                      onChange={(e) => setFormData({ ...formData, count_absence_as_session: e.target.checked })}
+                      checked={formData.count_absent_as_session}
+                      onChange={(e) => setFormData({ ...formData, count_absent_as_session: e.target.checked })}
                       className="w-4 h-4 text-emerald-600 rounded border-slate-300 focus:ring-emerald-500 cursor-pointer mt-0.5 shrink-0"
                     />
                     <div className="space-y-0.5">
@@ -381,7 +381,7 @@ export default function TeacherGroupsPage() {
                             </span>
                           </td>
                           <td className="p-4 text-center">
-                            {g.count_absence_as_session ? (
+                            {g.count_absent_as_session ? (
                               <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200/80 px-2.5 py-1 rounded-full">
                                 <span>⚠️</span> يُحسب حصة
                               </span>
