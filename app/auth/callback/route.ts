@@ -29,17 +29,41 @@ export async function GET(request: Request) {
       }
     );
 
-    const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+    // 1. تبديل رمز المصادقة بجلسة
+    const { data: authData, error: authError } = await supabase.auth.exchangeCodeForSession(code);
 
-    if (!error && data?.user) {
-      const { data: profile } = await supabase
+    if (!authError && authData?.user) {
+      const user = authData.user;
+
+      // 2. البحث عن البروفايل أولاً بـ ID الحساب
+      let { data: profile } = await supabase
         .from("profiles")
         .select("role")
-        .eq("id", data.user.id)
+        .eq("id", user.id)
         .maybeSingle();
 
+      // 3. إذا لم يجد بـ ID (حساب مسجل سابقاً)، يبحث بالبريد الإلكتروني مباشرة
+      if (!profile && user.email) {
+        const { data: profileByEmail } = await supabase
+          .from("profiles")
+          .select("role")
+          .eq("email", user.email)
+          .maybeSingle();
+
+        if (profileByEmail) {
+          profile = profileByEmail;
+          // تحديث id في جدول profiles لربطه بـ Google مستقبلاً
+          await supabase
+            .from("profiles")
+            .update({ id: user.id })
+            .eq("email", user.email);
+        }
+      }
+
+      // تنظيف القيمة
       const userRole = profile?.role ? String(profile.role).trim().toLowerCase() : "";
 
+      // 4. التوجيه المباشر إلى اللوحة المخصصة
       switch (userRole) {
         case "teacher":
           return NextResponse.redirect(`${origin}/teacher`);
