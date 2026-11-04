@@ -129,33 +129,42 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
       if (authErr) throw authErr;
       if (!authData.user) throw new Error("فشل إنشاء الحساب.");
 
-      const { error: profileErr } = await supabase.from("profiles").insert({
-        id: authData.user.id,
-        first_name: firstName.trim(),
-        last_name: lastName.trim(),
-        email: email.trim(),
-        phone: phone.trim(),
-        role: targetRole,
-        status: "pending", // يبقى معلق لحين قبول إدارة المدرسة
-        school_id: school.id,
-        school_name: school.name,
-      });
+      // الولي يتفعل حسابه فوراً (active)، بينما الأستاذ يظل قيد المراجعة (pending)
+      const initialStatus = targetRole === "parent" ? "active" : "pending";
+
+      // استخدام upsert لمنع خطأ التعارض 23505 مع الـ Trigger
+      const { error: profileErr } = await supabase.from("profiles").upsert(
+        {
+          id: authData.user.id,
+          first_name: firstName.trim(),
+          last_name: lastName.trim(),
+          email: email.trim(),
+          phone: phone.trim(),
+          role: targetRole,
+          status: initialStatus,
+          school_id: school.id,
+          school_name: school.name,
+        },
+        { onConflict: "id" }
+      );
 
       if (profileErr) throw profileErr;
 
-      const successRoleText = targetRole === "parent" ? "ولي أمر" : "أستاذ معتمد";
-      setMessage({
-        text: `🎉 تم تقديم طلب تسجيلك كـ (${successRoleText}) في "${school.name}" بنجاح! طلبك قيد المراجعة والاعتماد من قبل إدارة المؤسسة.`,
-        type: "success",
-      });
-
       if (targetRole === "parent") {
+        setMessage({
+          text: `🎉 تم إنشاء حساب ولي الأمر بنجاح في "${school.name}"! يمكنك البدء بالتصفح مباشرة.`,
+          type: "success",
+        });
         setParentFirstName("");
         setParentLastName("");
         setParentEmail("");
         setParentPhone("");
         setParentPassword("");
       } else {
+        setMessage({
+          text: `🎉 تم تقديم طلبك كـ (أستاذ معتمد) في "${school.name}". طلبك قيد المراجعة والاعتماد من قبل إدارة المؤسسة.`,
+          type: "success",
+        });
         setTeacherFirstName("");
         setTeacherLastName("");
         setTeacherEmail("");
@@ -206,7 +215,6 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
             عذراً، الرابط المستعمل لا يحتوي على المعرف الفريد الخاص بالمؤسسة التعليمية. يرجى إعادة مسح الـ QR Code الخاص بها.
           </p>
 
-          {/* تفاصيل الخطأ لتسهيل التتبع برمجياً */}
           {debugError && (
             <div className="p-3 bg-red-50 border border-red-100 rounded-xl text-[11px] text-red-600 font-mono text-right dir-ltr overflow-x-auto">
               <strong>Supabase Debug:</strong> {debugError}
@@ -229,11 +237,9 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
       className="min-h-screen bg-white text-slate-800 flex flex-col justify-center items-center p-4 sm:p-6 relative overflow-hidden"
       dir="rtl"
     >
-      {/* خلفية تالورا السينمائية */}
       <div className="absolute top-0 right-1/2 translate-x-1/2 w-full max-w-7xl h-96 bg-gradient-to-b from-blue-50/80 via-blue-50/20 to-transparent pointer-events-none -z-10 blur-3xl rounded-full" />
 
       <div className="w-full max-w-md my-auto">
-        {/* الشعار واسم المؤسسة */}
         <div className="text-center mb-6">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-blue-600 text-white font-black text-2xl shadow-xl shadow-blue-500/20 mb-2 ring-4 ring-blue-100">
             T
@@ -247,7 +253,6 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
         </div>
 
         <div className="bg-white rounded-3xl border border-slate-100 shadow-2xl shadow-blue-900/5 p-6 sm:p-8">
-          {/* تبويبات الاختيار */}
           <div className="grid grid-cols-2 gap-2 p-1.5 bg-slate-100/80 rounded-2xl mb-6 text-xs">
             <button
               type="button"
@@ -279,7 +284,6 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
             </button>
           </div>
 
-          {/* التنبيهات والرسائل */}
           {message.text && (
             <div
               className={`p-4 rounded-2xl text-xs font-bold mb-6 text-center ${
@@ -292,7 +296,6 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
             </div>
           )}
 
-          {/* 1. استمارة ولي الأمر */}
           {activeTab === "parent" && (
             <form
               onSubmit={(e) =>
@@ -389,7 +392,6 @@ export default function JoinSchoolRequestPage({ params }: JoinPageProps) {
             </form>
           )}
 
-          {/* 2. استمارة الأستاذ */}
           {activeTab === "teacher" && (
             <form
               onSubmit={(e) =>
