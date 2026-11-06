@@ -23,6 +23,7 @@ interface Group {
   name: string;
   teacher_id?: string;
   teacher_name?: string;
+  schedule?: string;
 }
 
 export default function SettingsPage() {
@@ -34,10 +35,19 @@ export default function SettingsPage() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [activeTab, setActiveTab] = useState<"teachers" | "students" | "groups">("teachers");
 
+  // حالة صلاحية تسجيل الحضور للمعلم
+  const [allowTeacherAttendance, setAllowTeacherAttendance] = useState<boolean>(true);
+  const [savingSettings, setSavingSettings] = useState<boolean>(false);
+
   // حالة Modal نقل الطالب
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
   const [targetGroupId, setTargetGroupId] = useState<string>("");
   const [isTransferring, setIsTransferring] = useState(false);
+
+  // حالة Modal تغيير توقيت الفوج
+  const [selectedGroupTiming, setSelectedGroupTiming] = useState<Group | null>(null);
+  const [groupScheduleInput, setGroupScheduleInput] = useState<string>("");
+  const [isUpdatingSchedule, setIsUpdatingSchedule] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -63,7 +73,6 @@ export default function SettingsPage() {
       if (profile?.school_id) {
         currentSchoolId = profile.school_id;
       } else {
-        // البحث عن المدرسة المملوكة بواسطة owner_id
         const { data: ownedSchool } = await supabase
           .from("schools")
           .select("id")
@@ -77,7 +86,6 @@ export default function SettingsPage() {
 
       setSchoolId(currentSchoolId);
 
-      // ⛔ إذا لم يتم التعرف على مدرسة مخصصة، نمنع الجلب تماماً لتفادي اختلاط البيانات
       if (!currentSchoolId) {
         console.warn("تنبيه أمان: لم يتم التعرف على معرّف المدرسة للمستخدم الحالي.");
         setTeachers([]);
@@ -85,6 +93,17 @@ export default function SettingsPage() {
         setStudents([]);
         setLoading(false);
         return;
+      }
+
+      // جلب صلاحية تسجيل الحضور للمدرسة
+      const { data: schoolData } = await supabase
+        .from("schools")
+        .select("allow_teacher_attendance")
+        .eq("id", currentSchoolId)
+        .maybeSingle();
+
+      if (schoolData) {
+        setAllowTeacherAttendance(schoolData.allow_teacher_attendance ?? true);
       }
 
       // 3. جلب الأساتذة الخاصين بهذه المدرسة حصراً
@@ -102,10 +121,10 @@ export default function SettingsPage() {
 
       setTeachers(formattedTeachers);
 
-      // 4. جلب الأفواج الخاصة بهذه المدرسة ودمج اسم الأستاذ المسؤول
+      // 4. جلب الأفواج الخاصة بهذه المدرسة وتوقيتها ودعم اسم الأستاذ المسؤول
       const { data: groupsData } = await supabase
         .from("groups")
-        .select("id, name, teacher_id")
+        .select("id, name, teacher_id, schedule")
         .eq("school_id", currentSchoolId);
 
       const formattedGroups = groupsData?.map((g: any) => {
@@ -115,6 +134,7 @@ export default function SettingsPage() {
           name: g.name,
           teacher_id: g.teacher_id,
           teacher_name: teacher ? teacher.full_name : "بدون أستاذ",
+          schedule: g.schedule || "",
         };
       }) || [];
 
@@ -149,6 +169,29 @@ export default function SettingsPage() {
     }
   };
 
+  // ---------------- [ تغيير صلاحية تسجيل الحضور للمعلم ] ----------------
+  const handleTogglePermission = async (newValue: boolean) => {
+    if (!schoolId) return;
+
+    setAllowTeacherAttendance(newValue);
+    setSavingSettings(true);
+
+    try {
+      const { error } = await supabase
+        .from("schools")
+        .update({ allow_teacher_attendance: newValue })
+        .eq("id", schoolId);
+
+      if (error) throw error;
+    } catch (err: any) {
+      console.error("خطأ أثناء تحديث الصلاحية:", err);
+      alert("تعذر حفظ التغييرات، يرجى المحاولة لاحقاً");
+      setAllowTeacherAttendance(!newValue);
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
   // ---------------- [ إجراءات إدارة الأساتذة ] ----------------
   const handleDeleteTeacher = async (teacherId: string) => {
     if (!schoolId) return;
@@ -159,14 +202,12 @@ export default function SettingsPage() {
     if (!confirmAction) return;
 
     try {
-      // تفريغ الأستاذ من الأفواج المرتبطة به في هذه المدرسة
       await supabase
         .from("groups")
         .update({ teacher_id: null })
         .eq("teacher_id", teacherId)
         .eq("school_id", schoolId);
 
-      // حذف بروفايل الأستاذ
       const { error } = await supabase
         .from("profiles")
         .delete()
@@ -194,14 +235,12 @@ export default function SettingsPage() {
     if (!confirmAction) return;
 
     try {
-      // تفريغ الطلاب من الفوج داخل نفس المدرسة
       await supabase
         .from("students")
         .update({ group_id: null })
         .eq("group_id", groupId)
         .eq("school_id", schoolId);
 
-      // حذف الفوج
       const { error } = await supabase
         .from("groups")
         .delete()
@@ -216,6 +255,34 @@ export default function SettingsPage() {
     } catch (error: any) {
       alert("حدث خطأ أثناء حذف الفوج: " + (error.message || error));
       console.error(error);
+    }
+  };
+
+  // ---------------- [ تغيير توقيت الفوج ] ----------------
+  const handleUpdateGroupSchedule = async () => {
+    if (!selectedGroupTiming || !schoolId) return;
+
+    try {
+      setIsUpdatingSchedule(true);
+
+      const { error } = await supabase
+        .from("groups")
+        .update({ schedule: groupScheduleInput })
+        .eq("id", selectedGroupTiming.id)
+        .eq("school_id", schoolId);
+
+      if (error) throw error;
+
+      setGroups(groups.map(g => g.id === selectedGroupTiming.id ? { ...g, schedule: groupScheduleInput } : g));
+
+      alert("تم تحديث توقيت الفوج بنجاح! ⏰");
+      setSelectedGroupTiming(null);
+      setGroupScheduleInput("");
+    } catch (error: any) {
+      alert("حدث خطأ أثناء تحديث توقيت الفوج: " + (error.message || error));
+      console.error(error);
+    } finally {
+      setIsUpdatingSchedule(false);
     }
   };
 
@@ -243,7 +310,6 @@ export default function SettingsPage() {
     }
   };
 
-  // نقل الطالب من فوج إلى آخر
   const handleTransferStudent = async () => {
     if (!selectedStudent || !schoolId) return;
 
@@ -323,8 +389,32 @@ export default function SettingsPage() {
         <div className="border-b pb-5 border-slate-200/60">
           <h1 className="text-xl md:text-2xl font-bold text-slate-800">إدارة النظام وإعدادات الصلاحيات</h1>
           <p className="text-sm text-slate-500 mt-1">
-            صلاحيات إدارة المدرسة للتحكم في الأساتذة، الطلاب، والأفواج.
+            صلاحيات إدارة المدرسة للتحكم في الأساتذة، الطلاب، والأفواج وتواقيتها.
           </p>
+        </div>
+
+        {/* بطاقة التحكم بصلاحية تسجيل الحضور للمعلمين */}
+        <div className="bg-white p-5 rounded-xl border border-slate-200/60 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <h3 className="font-bold text-slate-800 text-sm">منح صلاحية تسجيل الحضور للمعلمين</h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              عند التفعيل، يمكن للمعلم رصد الحضور والغياب. عند التعطيل، يقتصر دور المعلم على إضافة الملاحظات فقط.
+            </p>
+          </div>
+          <button
+            type="button"
+            disabled={savingSettings || !schoolId}
+            onClick={() => handleTogglePermission(!allowTeacherAttendance)}
+            className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+              allowTeacherAttendance ? "bg-emerald-600" : "bg-slate-300"
+            }`}
+          >
+            <span
+              className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                allowTeacherAttendance ? "translate-x-0" : "-translate-x-5"
+              }`}
+            />
+          </button>
         </div>
 
         {/* التبويبات */}
@@ -405,7 +495,7 @@ export default function SettingsPage() {
               <div className="bg-white rounded-xl border border-slate-200/60 shadow-xs overflow-hidden">
                 <div className="p-4 bg-slate-50 border-b border-slate-200/60">
                   <h3 className="font-bold text-slate-800">قائمة الأفواج</h3>
-                  <p className="text-xs text-slate-500 mt-0.5">حذف الفوج سيقوم بفك ارتباط الطلاب دون حذف حساباتهم</p>
+                  <p className="text-xs text-slate-500 mt-0.5">يمكنك تعديل توقيت الفوج بسهولة أو حذفه لفك ارتباط الطلاب</p>
                 </div>
                 <div className="divide-y divide-slate-100">
                   {groups.length === 0 ? (
@@ -415,14 +505,30 @@ export default function SettingsPage() {
                       <div key={group.id} className="p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 hover:bg-slate-50/40 transition-colors">
                         <div>
                           <span className="font-semibold text-slate-900 block">{group.name}</span>
-                          <span className="text-xs text-slate-500">الأستاذ المسؤول: {group.teacher_name}</span>
+                          <span className="text-xs text-slate-500 block">الأستاذ المسؤول: {group.teacher_name}</span>
+                          {group.schedule && (
+                            <span className="text-xs text-emerald-700 font-medium block mt-0.5">
+                              ⏰ التوقيت الحالي: {group.schedule}
+                            </span>
+                          )}
                         </div>
-                        <button
-                          onClick={() => handleDeleteGroup(group.id)}
-                          className="w-full sm:w-auto text-xs font-semibold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 px-3 py-2 rounded-lg transition-colors text-center cursor-pointer"
-                        >
-                          حذف الفوج
-                        </button>
+                        <div className="flex items-center gap-2 w-full sm:w-auto">
+                          <button
+                            onClick={() => {
+                              setSelectedGroupTiming(group);
+                              setGroupScheduleInput(group.schedule || "");
+                            }}
+                            className="w-full sm:w-auto text-xs font-semibold text-indigo-600 hover:text-indigo-700 bg-indigo-50 hover:bg-indigo-100 px-3 py-2 rounded-lg transition-colors text-center cursor-pointer"
+                          >
+                            تغيير توقيت الفوج
+                          </button>
+                          <button
+                            onClick={() => handleDeleteGroup(group.id)}
+                            className="w-full sm:w-auto text-xs font-semibold text-rose-600 hover:text-rose-700 bg-rose-50 hover:bg-rose-100 px-3 py-2 rounded-lg transition-colors text-center cursor-pointer"
+                          >
+                            حذف الفوج
+                          </button>
+                        </div>
                       </div>
                     ))
                   )}
@@ -517,6 +623,40 @@ export default function SettingsPage() {
                   className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 cursor-pointer"
                 >
                   {isTransferring ? "جاري النقل..." : "تأكيد النقل"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Modal تغيير توقيت الفوج */}
+        {selectedGroupTiming && (
+          <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+            <div className="bg-white rounded-xl shadow-lg max-w-md w-full p-6 space-y-4 text-right" dir="rtl">
+              <h3 className="text-lg font-bold text-slate-800">تغيير توقيت الفوج: {selectedGroupTiming.name}</h3>
+              <p className="text-xs text-slate-500">أدخل التوقيت الجديد للفوج (مثال: السبت والأربعاء من 14:00 إلى 16:00):</p>
+
+              <input
+                type="text"
+                value={groupScheduleInput}
+                onChange={(e) => setGroupScheduleInput(e.target.value)}
+                placeholder="أدخل توقيت الفوج الجديد..."
+                className="w-full p-2.5 border border-slate-300 rounded-lg text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  onClick={() => setSelectedGroupTiming(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  onClick={handleUpdateGroupSchedule}
+                  disabled={isUpdatingSchedule}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 cursor-pointer"
+                >
+                  {isUpdatingSchedule ? "جاري الحفظ..." : "حفظ التوقيت"}
                 </button>
               </div>
             </div>

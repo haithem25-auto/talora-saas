@@ -28,6 +28,7 @@ const navigationConfig: Record<UserRole, NavItem[]> = {
     { label: "الأفواج والدروس", href: "/dashboard/groups", icon: "👥" },
     { label: "الإشعارات", href: "/dashboard/notifications", icon: "🔔" },
     { label: "المعاملات المالية", href: "/dashboard/finance", icon: "💳" },
+    { label: "تسجيل الحضور", href: "/dashboard/attendance", icon: "📝" },
     { label: "الإعدادات", href: "/dashboard/settings", icon: "⚙️" },
   ],
   independent_teacher: [

@@ -28,7 +28,7 @@ interface SubscriptionRecord {
   billing_month?: string;
   amount_due: number;
   amount_paid: number;
-  status: "paid" | "partial" | "unpaid";
+  status: "paid" | "partially_paid" | "unpaid";
 }
 
 interface StudentStatSummary {
@@ -38,6 +38,7 @@ interface StudentStatSummary {
   presentCount: number;
   absentCount: number;
   consumedSessions: number;
+  targetSessions: number;
   isLateOnPayment: boolean;
   unpaidAmount: number;
 }
@@ -65,7 +66,6 @@ export default function StudentStatsPage() {
     try {
       setLoading(true);
 
-      // حماية المعامل: التأكد من وجود نص لتاريخ الشهر أو استخدام القيم الافتراضية
       const targetMonth =
         monthYYYYMM ||
         selectedMonth ||
@@ -99,19 +99,9 @@ export default function StudentStatsPage() {
         return;
       }
 
-      // 2. حساب نطاق التاريخ بأمان
-      const [yearStr, monthStr] = targetMonth.split("-");
-      const year = parseInt(yearStr, 10);
-      const month = parseInt(monthStr, 10);
-
       const startOfMonth = `${targetMonth}-01`;
 
-      const nextMonthDate = new Date(year, month, 1);
-      const nextYearStr = nextMonthDate.getFullYear();
-      const nextMonthStr = String(nextMonthDate.getMonth() + 1).padStart(2, "0");
-      const startOfNextMonth = `${nextYearStr}-${nextMonthStr}-01`;
-
-      // 3. جلب الأفواج
+      // 2. جلب الأفواج
       const { data: groupsData } = await supabase
         .from("groups")
         .select("id, name, monthly_price, monthly_sessions_count, level, count_absent_as_session")
@@ -120,7 +110,7 @@ export default function StudentStatsPage() {
       const groupsList: Group[] = groupsData || [];
       const groupsMap = new Map<string, Group>(groupsList.map((g) => [g.id, g]));
 
-      // 4. جلب الطلاب
+      // 3. جلب الطلاب
       const { data: studentsData } = await supabase
         .from("students")
         .select("id, first_name, last_name, level, group_id")
@@ -138,13 +128,12 @@ export default function StudentStatsPage() {
         return;
       }
 
-      // 5. جلب الاشتراكات بنطاق تاريخ آمن
+      // 4. جلب الاشتراكات بمطابقة بداية الشهر القياسية (YYYY-MM-01)
       const { data: subsData } = await supabase
         .from("student_subscriptions")
         .select("id, student_id, billing_month, amount_due, amount_paid, status")
         .in("student_id", studentIds)
-        .gte("billing_month", startOfMonth)
-        .lt("billing_month", startOfNextMonth);
+        .eq("billing_month", startOfMonth);
 
       const subMap = new Map<string, SubscriptionRecord>();
       (subsData || []).forEach((sub: any) => {
@@ -154,53 +143,54 @@ export default function StudentStatsPage() {
           billing_month: sub.billing_month,
           amount_due: Number(sub.amount_due) || 0,
           amount_paid: Number(sub.amount_paid) || 0,
-          status: sub.status,
+          status: sub.status as "paid" | "partially_paid" | "unpaid",
         });
       });
 
-      // 6. جلب الحضور لنفس النطاق الزمني
-      const { data: attData } = await supabase
-        .from("attendance")
-        .select("student_id, status, attendance_date")
-        .in("student_id", studentIds)
-        .eq("school_id", currentSchoolId)
-        .gte("attendance_date", startOfMonth)
-        .lt("attendance_date", startOfNextMonth);
+      // 5. جلب إحصائيات الحضور الموحدة المباشرة من الـ View
+      const { data: summaryViewData } = await supabase
+        .from("student_attendance_summary")
+        .select("student_id, total_consumed_sessions, target_monthly_sessions, absent_count, month_period")
+        .eq("school_id", currentSchoolId);
 
-      const studentAttStats = new Map<string, { present: number; absent: number }>();
-
-      (attData || []).forEach((r) => {
-        const current = studentAttStats.get(r.student_id) || { present: 0, absent: 0 };
-        if (r.status === "present" || r.status === "late") {
-          current.present += 1;
-        } else if (r.status === "absent") {
-          current.absent += 1;
+      const attMap = new Map<string, { consumed: number; target: number; absent: number }>();
+      (summaryViewData || []).forEach((row: any) => {
+        if (row.month_period?.startsWith(targetMonth)) {
+          attMap.set(row.student_id, {
+            consumed: Number(row.total_consumed_sessions) || 0,
+            target: Number(row.target_monthly_sessions) || 4,
+            absent: Number(row.absent_count) || 0,
+          });
         }
-        studentAttStats.set(r.student_id, current);
       });
 
-      // 7. تجميع البيانات للواجهة
+      // 6. تجميع البيانات وتأكيد حالة التسديد
       const summary: StudentStatSummary[] = studentsList.map((st) => {
         const group = st.group_id ? groupsMap.get(st.group_id) : undefined;
         const sub = subMap.get(st.id);
-        const att = studentAttStats.get(st.id) || { present: 0, absent: 0 };
-
-        const countAbsent = group?.count_absent_as_session ?? false;
-        const consumedSessions = countAbsent ? att.present + att.absent : att.present;
+        const att = attMap.get(st.id) || {
+          consumed: 0,
+          target: group?.monthly_sessions_count || 4,
+          absent: 0,
+        };
 
         const reqPrice = sub ? sub.amount_due : (group?.monthly_price || 0);
         const paidPrice = sub ? sub.amount_paid : 0;
         const unpaidAmount = Math.max(0, reqPrice - paidPrice);
 
-        const isLateOnPayment = sub ? sub.status !== "paid" : reqPrice > 0;
+        const isPaid = Boolean(sub?.status === "paid" || (sub && sub.amount_paid >= sub.amount_due && sub.amount_due > 0));
+
+        // تحويل النتيجة بشكل صريح إلى boolean لعدم إرجاع undefined
+        const isLateOnPayment = Boolean(!isPaid && (att.consumed >= att.target || (sub && sub.status !== "paid")));
 
         return {
           student: st,
           group,
           subscription: sub,
-          presentCount: att.present,
+          presentCount: Math.max(0, att.consumed - (group?.count_absent_as_session ? att.absent : 0)),
           absentCount: att.absent,
-          consumedSessions,
+          consumedSessions: att.consumed,
+          targetSessions: att.target,
           isLateOnPayment,
           unpaidAmount,
         };
@@ -267,11 +257,11 @@ export default function StudentStatsPage() {
           <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
             <span className="text-xs font-bold text-slate-400">المتأخرون عن التسديد</span>
             <div className="text-3xl font-black text-rose-600 mt-2">{totalUnpaidStudents}</div>
-            <span className="text-[11px] text-rose-500 font-medium">طالب يحتاج متابعة الدفع</span>
+            <span className="text-[11px] text-rose-500 font-medium">طلاب استوفوا الحصص ولم يسددوا</span>
           </div>
 
           <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs">
-            <span className="text-xs font-bold text-slate-400">كثرة الغياب (حطتين فأكثر)</span>
+            <span className="text-xs font-bold text-slate-400">كثرة الغياب (حصتين فأكثر)</span>
             <div className="text-3xl font-black text-amber-600 mt-2">{totalHighAbsents}</div>
             <span className="text-[11px] text-amber-500 font-medium">طلاب غابوا حصتين فأكثر</span>
           </div>
@@ -333,7 +323,7 @@ export default function StudentStatsPage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
-                  {filteredSummary.map(({ student, group, presentCount, absentCount, consumedSessions, isLateOnPayment, unpaidAmount, subscription }) => (
+                  {filteredSummary.map(({ student, group, presentCount, absentCount, consumedSessions, targetSessions, isLateOnPayment, unpaidAmount, subscription }) => (
                     <tr key={student.id} className="hover:bg-slate-50/50 transition">
                       <td className="p-4 font-bold text-slate-900">
                         {student.first_name} {student.last_name}
@@ -358,7 +348,7 @@ export default function StudentStatsPage() {
                         </span>
                       </td>
                       <td className="p-4 font-mono font-bold">
-                        {consumedSessions} / {group?.monthly_sessions_count || 4} حصص
+                        {consumedSessions} / {targetSessions} حصص
                       </td>
                       <td className="p-4">
                         {subscription ? (
@@ -366,7 +356,7 @@ export default function StudentStatsPage() {
                             <span className="px-2 py-1 bg-emerald-100 text-emerald-800 rounded font-bold text-[11px]">
                               ✓ مسجل ومسدد
                             </span>
-                          ) : subscription.status === "partial" ? (
+                          ) : subscription.status === "partially_paid" ? (
                             <span className="px-2 py-1 bg-amber-100 text-amber-800 rounded font-bold text-[11px]">
                               ⏳ مدفوع جزئياً
                             </span>
@@ -382,11 +372,11 @@ export default function StudentStatsPage() {
                         )}
                       </td>
                       <td className="p-4 font-mono font-bold text-slate-700">
-                        {subscription ? `${subscription.amount_paid} / ${subscription.amount_due} د.ج` : `0 / ${group?.monthly_price || 0} د.ج`}
+                        {subscription ? `${subscription.amount_paid.toLocaleString()} / ${subscription.amount_due.toLocaleString()} د.ج` : `0 / ${(group?.monthly_price || 0).toLocaleString()} د.ج`}
                       </td>
                       <td className="p-4 font-mono font-bold text-slate-900">
                         {unpaidAmount > 0 ? (
-                          <span className="text-rose-600">{unpaidAmount} د.ج</span>
+                          <span className="text-rose-600">{unpaidAmount.toLocaleString()} د.ج</span>
                         ) : (
                           <span className="text-emerald-600">0 د.ج</span>
                         )}

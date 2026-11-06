@@ -45,7 +45,10 @@ export default function TeacherAttendancePage() {
   const [attendance, setAttendance] = useState<AttendanceState>({});
   const [teacherId, setTeacherId] = useState<string | null>(null);
 
-  // جلب بيانات المعلم والأفواج المسندة إليه
+  // حالة صلاحية تسجيل الحضور
+  const [allowAttendancePermission, setAllowAttendancePermission] = useState<boolean>(true);
+
+  // جلب بيانات المعلم والتحقق من الصلاحيات والتحكم بالأفواج
   useEffect(() => {
     async function getTeacherData() {
       try {
@@ -56,15 +59,30 @@ export default function TeacherAttendancePage() {
 
         setTeacherId(user.id);
 
+        // 1. جلب الأفواج
         const { data: groupsData, error: groupsError } = await supabase
           .from("groups")
           .select("id, name, school_id")
           .eq("teacher_id", user.id);
 
         if (groupsError) throw groupsError;
-        setGroups(groupsData || []);
+        const loadedGroups = groupsData || [];
+        setGroups(loadedGroups);
+
+        // 2. التحقق من صلاحية الحضور المسندة للمدرسة
+        if (loadedGroups.length > 0 && loadedGroups[0].school_id) {
+          const { data: schoolData } = await supabase
+            .from("schools")
+            .select("allow_teacher_attendance")
+            .eq("id", loadedGroups[0].school_id)
+            .maybeSingle();
+
+          if (schoolData) {
+            setAllowAttendancePermission(schoolData.allow_teacher_attendance ?? true);
+          }
+        }
       } catch (error) {
-        console.error("خطأ أثناء جلب أفواج المعلم:", error);
+        console.error("خطأ أثناء جلب بيانات المعلم والصلاحيات:", error);
       } finally {
         setLoading(false);
       }
@@ -134,58 +152,86 @@ export default function TeacherAttendancePage() {
 
     try {
       setSaving(true);
-
       const currentGroup = groups.find((g) => g.id === selectedGroup);
 
-      const attendanceRecords = students.map((student) => {
-        const studentRecord = attendance[student.id] || {
-          status: "present",
-          notes: "",
-        };
+      // حالة (1): الصلاحية ممنوحة للمعلم -> رصد الحضور والغياب بشكل كامل
+      if (allowAttendancePermission) {
+        const attendanceRecords = students.map((student) => {
+          const studentRecord = attendance[student.id] || {
+            status: "present",
+            notes: "",
+          };
 
-        return {
-          student_id: student.id,
+          return {
+            student_id: student.id,
+            group_id: selectedGroup,
+            teacher_id: teacherId,
+            school_id: currentGroup?.school_id || null,
+            status: studentRecord.status,
+            notes: studentRecord.notes,
+            attendance_date: new Date().toISOString().split("T")[0],
+          };
+        });
+
+        const { error: attendanceError } = await supabase
+          .from("attendance")
+          .insert(attendanceRecords);
+
+        if (attendanceError) throw attendanceError;
+
+        // توثيق الحصة المنفذة في جدول group_sessions
+        await supabase.from("group_sessions").insert({
           group_id: selectedGroup,
-          teacher_id: teacherId,
           school_id: currentGroup?.school_id || null,
-          status: studentRecord.status,
-          notes: studentRecord.notes,
-          attendance_date: new Date().toISOString().split("T")[0],
-        };
-      });
+          teacher_id: teacherId,
+          session_date: new Date().toISOString().split("T")[0],
+        });
 
-      const { error: attendanceError } = await supabase
-        .from("attendance")
-        .insert(attendanceRecords);
+        // إرسال إشعارات أولياء الأمور للطلاب الغائبين
+        const absentStudents = students.filter(
+          (student) => attendance[student.id]?.status === "absent" && student.parent_id
+        );
 
-      if (attendanceError) throw attendanceError;
+        if (absentStudents.length > 0) {
+          const notificationRecords = absentStudents.map((student) => ({
+            user_id: student.parent_id,
+            title: "تنبيه غياب طالب",
+            message: `نفيدكم علماً بغياب ابنكم/ابنتكم ${student.full_name} عن الحصة اليوم.`,
+            is_read: false,
+            is_sent: false,
+          }));
 
-      // إرسال الإشعارات لأولياء الأمور للطلاب الغائبين
-      const absentStudents = students.filter(
-        (student) => attendance[student.id]?.status === "absent" && student.parent_id
-      );
-
-      if (absentStudents.length > 0) {
-        const notificationRecords = absentStudents.map((student) => ({
-          user_id: student.parent_id,
-          title: "تنبيه غياب طالب",
-          message: `نفيدكم علماً بغياب ابنكم/ابنتكم ${student.full_name} عن الحصة اليوم.`,
-          is_read: false,
-          is_sent: false,
-        }));
-
-        const { error: notificationError } = await supabase
-          .from("notifications")
-          .insert(notificationRecords);
-
-        if (notificationError) {
-          console.warn("تنبيه: تعذر إرسال الإشعارات لجداول الإشعارات", notificationError);
+          await supabase.from("notifications").insert(notificationRecords);
         }
-      }
 
-      alert("تم تسجيل وتوثيق الحضور والغياب اليومي بنجاح!");
+        alert("تم تسجيل وتوثيق الحضور والغياب والحصة اليومية بنجاح!");
+      } 
+      // حالة (2): الصلاحية معطلة -> حفظ الملاحظات فقط في جدول teacher_student_notes
+      else {
+        const notesToSave = students
+          .filter((student) => attendance[student.id]?.notes?.trim())
+          .map((student) => ({
+            student_id: student.id,
+            group_id: selectedGroup,
+            teacher_id: teacherId,
+            note: attendance[student.id].notes.trim(),
+          }));
+
+        if (notesToSave.length === 0) {
+          alert("يرجى إدخال ملاحظة واحدة على الأقل قبل الحفظ.");
+          return;
+        }
+
+        const { error: notesError } = await supabase
+          .from("teacher_student_notes")
+          .insert(notesToSave);
+
+        if (notesError) throw notesError;
+
+        alert("تم حفظ وتوثيق ملاحظات الطلاب بنجاح!");
+      }
     } catch (error: any) {
-      console.error("خطأ أثناء حفظ الحضور:", error);
+      console.error("خطأ أثناء عملية الحفظ:", error);
       alert(`حدث خطأ أثناء الحفظ: ${error.message || "يرجى المحاولة لاحقاً"}`);
     } finally {
       setSaving(false);
@@ -223,13 +269,25 @@ export default function TeacherAttendancePage() {
                 📋
               </div>
               <div>
-                <h1 className="text-xl md:text-2xl font-black tracking-tight">رصد وتسجيل الحضور والغياب</h1>
+                <h1 className="text-xl md:text-2xl font-black tracking-tight">
+                  {allowAttendancePermission ? "رصد وتسجيل الحضور والغياب" : "ملاحظات طلاب الفوج"}
+                </h1>
                 <p className="text-emerald-100 text-xs md:text-sm mt-0.5 font-medium">
-                  حدد الفوج للبدء في تسحيل حضور وغياب الطلاب اليومي
+                  {allowAttendancePermission
+                    ? "حدد الفوج للبدء في تسجيل حضور وغياب الطلاب اليومي"
+                    : "تسجيل الحضور مسند لإدارة الأكاديمية. يمكنك تدوين ملاحظات الطلاب أدناه."}
                 </p>
               </div>
             </div>
           </div>
+
+          {/* تنبيه حالة الصلاحية إذا كانت معطلة */}
+          {!allowAttendancePermission && (
+            <div className="bg-sky-50 border border-sky-200 text-sky-800 p-4 rounded-2xl text-xs md:text-sm font-semibold flex items-center gap-3">
+              <span className="text-lg">ℹ️</span>
+              <span>تنبيه: ميزة تسجيل الحضور والغياب حالياً محصورة لدى إدارة الأكاديمية. يقتصر نموذجك على إضافة ملاحظات الطلاب فقط.</span>
+            </div>
+          )}
 
           {/* تحديد الفوج */}
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200/80">
@@ -265,7 +323,7 @@ export default function TeacherAttendancePage() {
                   <thead>
                     <tr className="bg-slate-50 text-slate-500 text-xs font-bold border-b border-slate-200/80">
                       <th className="p-4 pr-6">اسم الطالب</th>
-                      <th className="p-4">حالة الحضور</th>
+                      {allowAttendancePermission && <th className="p-4">حالة الحضور</th>}
                       <th className="p-4 pl-6">ملاحظات</th>
                     </tr>
                   </thead>
@@ -279,28 +337,33 @@ export default function TeacherAttendancePage() {
                       return (
                         <tr key={student.id} className="hover:bg-slate-50/60 transition">
                           <td className="p-4 pr-6 font-bold text-slate-900">{student.full_name}</td>
-                          <td className="p-4">
-                            <div className="flex gap-1.5 bg-slate-100/80 p-1 rounded-xl w-fit border border-slate-200/60">
-                              {STATUS_CONFIG.map((conf) => {
-                                const isActive = currentState.status === conf.id;
-                                return (
-                                  <button
-                                    key={conf.id}
-                                    type="button"
-                                    onClick={() => updateStudentState(student.id, "status", conf.id)}
-                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${
-                                      isActive
-                                        ? `${conf.activeClass} shadow-md`
-                                        : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/50"
-                                    }`}
-                                  >
-                                    <span>{conf.icon}</span>
-                                    <span>{conf.label}</span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </td>
+                          
+                          {/* عمود الحالة يظهر فقط في حال تفعيل الصلاحية */}
+                          {allowAttendancePermission && (
+                            <td className="p-4">
+                              <div className="flex gap-1.5 bg-slate-100/80 p-1 rounded-xl w-fit border border-slate-200/60">
+                                {STATUS_CONFIG.map((conf) => {
+                                  const isActive = currentState.status === conf.id;
+                                  return (
+                                    <button
+                                      key={conf.id}
+                                      type="button"
+                                      onClick={() => updateStudentState(student.id, "status", conf.id)}
+                                      className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${
+                                        isActive
+                                          ? `${conf.activeClass} shadow-md`
+                                          : "text-slate-600 hover:text-slate-900 hover:bg-slate-200/50"
+                                      }`}
+                                    >
+                                      <span>{conf.icon}</span>
+                                      <span>{conf.label}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </td>
+                          )}
+
                           <td className="p-4 pl-6">
                             <input
                               type="text"
@@ -329,29 +392,31 @@ export default function TeacherAttendancePage() {
                     <div key={student.id} className="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-3">
                       <div className="font-bold text-slate-900 text-base">{student.full_name}</div>
                       
-                      <div className="space-y-2">
-                        <span className="block text-xs font-bold text-slate-500">الحالة:</span>
-                        <div className="grid grid-cols-2 gap-2">
-                          {STATUS_CONFIG.map((conf) => {
-                            const isActive = currentState.status === conf.id;
-                            return (
-                              <button
-                                key={conf.id}
-                                type="button"
-                                onClick={() => updateStudentState(student.id, "status", conf.id)}
-                                className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
-                                  isActive
-                                    ? `${conf.activeClass} shadow-sm`
-                                    : "bg-white text-slate-600 border border-slate-200"
-                                }`}
-                              >
-                                <span>{conf.icon}</span>
-                                <span>{conf.label}</span>
-                              </button>
-                            );
-                          })}
+                      {allowAttendancePermission && (
+                        <div className="space-y-2">
+                          <span className="block text-xs font-bold text-slate-500">الحالة:</span>
+                          <div className="grid grid-cols-2 gap-2">
+                            {STATUS_CONFIG.map((conf) => {
+                              const isActive = currentState.status === conf.id;
+                              return (
+                                <button
+                                  key={conf.id}
+                                  type="button"
+                                  onClick={() => updateStudentState(student.id, "status", conf.id)}
+                                  className={`py-2 px-3 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                                    isActive
+                                      ? `${conf.activeClass} shadow-sm`
+                                      : "bg-white text-slate-600 border border-slate-200"
+                                  }`}
+                                >
+                                  <span>{conf.icon}</span>
+                                  <span>{conf.label}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
                         </div>
-                      </div>
+                      )}
 
                       <input
                         type="text"
@@ -371,9 +436,13 @@ export default function TeacherAttendancePage() {
                   type="button"
                   onClick={handleSaveAttendance}
                   disabled={saving}
-                  className="w-full md:w-auto bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold px-8 py-3 rounded-xl text-sm shadow-lg shadow-emerald-600/20 transition disabled:opacity-50 flex items-center justify-center gap-2"
+                  className="w-full md:w-auto bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 text-white font-bold px-8 py-3 rounded-xl text-sm shadow-lg shadow-emerald-600/20 transition disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
                 >
-                  {saving ? "جاري الحفظ..." : "💾 حفظ الحضور"}
+                  {saving
+                    ? "جاري الحفظ..."
+                    : allowAttendancePermission
+                    ? "💾 حفظ الحضور"
+                    : "💾 حفظ الملاحظات"}
                 </button>
               </div>
             </div>
